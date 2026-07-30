@@ -1281,7 +1281,7 @@ function openSyncSetup() {
   if (syncConfig) {
     document.getElementById('syncUrl').value = syncConfig.url || '';
     document.getElementById('syncKey').value = syncConfig.anonKey || '';
-    document.getElementById('syncPwd').value = syncConfig.pwd || '';
+    document.getElementById('syncPwd').value = '';
   }
   const status = document.getElementById('syncStatus');
   if (syncConfig && syncConfig.connected) {
@@ -1532,8 +1532,8 @@ function showLockUI(mode) {
   const p1 = document.getElementById('lockPwd');
   p1.value = ''; p2.value = ''; hint.textContent = '';
   if (mode === 'setup') {
-    sub.textContent = (syncConfig && syncConfig.pwd) ? '请输入你之前设置的同步密码以启用安全锁' : '首次使用，请设置访问密码';
-    p2.style.display = (syncConfig && syncConfig.pwd) ? 'none' : '';
+    sub.textContent = (syncConfig && syncConfig.connected) ? '请输入你的同步密码以启用安全锁' : '首次使用，请设置访问密码';
+    p2.style.display = (syncConfig && syncConfig.connected) ? 'none' : '';
     btn.textContent = '启用安全锁';
   } else {
     sub.textContent = '请输入访问密码';
@@ -1556,9 +1556,8 @@ async function lockSubmit() {
   if (!p1) { hint.textContent = '请输入密码'; return; }
 
   if (isSetup) {
-    if (syncConfig && syncConfig.pwd) {
-      // Reconcile with existing cloud sync password (stored plaintext in legacy versions)
-      if (p1 !== syncConfig.pwd) { hint.textContent = '与你之前设置的同步密码不一致'; return; }
+    if (syncConfig && syncConfig.connected) {
+      // Sync already connected — password should match the sync password
       accessPwd = p1;
     } else {
       if (p1.length < 4) { hint.textContent = '密码至少4位'; return; }
