@@ -4034,7 +4034,7 @@ const DATA_KEYS = ['planTasks','bills','savings','savingsAccounts','fitnessTasks
 
 function exportAllData() {
   const backup = { version: 'v14', exportedAt: new Date().toISOString(), data: {} };
-  DATA_KEYS.forEach(k => { backup.data[k] = LS.get(k, null); });
+  DATA_KEYS.forEach(k => { backup.data[k] = state[k] !== undefined ? state[k] : null; });
   const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -4055,10 +4055,10 @@ function importAllData(input) {
       if (!backup.data) { showToast('无效的备份文件'); return; }
       DATA_KEYS.forEach(k => {
         if (backup.data[k] !== undefined && backup.data[k] !== null) {
-          LS.set(k, backup.data[k]);
+          state[k] = backup.data[k];
         }
       });
-      DATA_KEYS.forEach(k => { state[k] = LS.get(k, state[k] === undefined ? (Array.isArray(state[k]) ? [] : {}) : state[k]); });
+      saveVault().then(() => { syncPushDebounced(); });
       showToast('数据已导入! 页面即将刷新...');
       setTimeout(() => location.reload(), 1200);
     } catch (err) { showToast('文件格式错误，无法导入'); }
