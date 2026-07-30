@@ -1,7 +1,6 @@
-const APP_VERSION = '14';
+const APP_VERSION = '15';
 const STATIC_CACHE = 'bai-static-v' + APP_VERSION;
 
-// 静态资源（很少变动，可以长期缓存）
 const STATIC_ASSETS = [
   './manifest.json',
   './icons/icon-192.png',
@@ -12,7 +11,7 @@ self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(STATIC_CACHE).then(cache => cache.addAll(STATIC_ASSETS))
   );
-  self.skipWaiting(); // 新 SW 立即接管
+  self.skipWaiting();
 });
 
 self.addEventListener('activate', (e) => {
@@ -29,15 +28,20 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
 
-  // index.html — 永远走网络，确保拿到最新版
+  // 跨域请求（API调用等）— 完全放行，不拦截不缓存
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  // index.html — 网络优先，禁止HTTP缓存
   if (url.pathname.endsWith('/') || url.pathname.endsWith('index.html')) {
     e.respondWith(
-      fetch(e.request).catch(() => caches.match(e.request))
+      fetch(e.request, { cache: 'no-cache' }).catch(() => caches.match(e.request))
     );
     return;
   }
 
-  // 静态资源 — Cache First（改动时手动升 APP_VERSION 即可）
+  // 静态资源 — Cache First
   if (STATIC_ASSETS.some(a => url.pathname.endsWith(a.replace('./', '')))) {
     e.respondWith(
       caches.match(e.request).then(cached => cached || fetch(e.request))
@@ -45,21 +49,14 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // 其他 — Stale While Revalidate（先给缓存秒开，后台更新）
+  // 其他同源请求 — 网络优先
   e.respondWith(
-    caches.open(STATIC_CACHE).then(cache =>
-      cache.match(e.request).then(cached => {
-        const fetched = fetch(e.request).then(response => {
-          if (response.ok) cache.put(e.request, response.clone());
-          return response;
-        });
-        return cached || fetched;
-      })
+    fetch(e.request, { cache: 'no-cache' }).catch(() =>
+      caches.match(e.request)
     )
   );
 });
 
-// 当检测到新版本时通知页面
 self.addEventListener('message', (e) => {
   if (e.data === 'skipWaiting') {
     self.skipWaiting();
