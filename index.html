@@ -3694,14 +3694,29 @@ async function doTranslate() {
   result.innerHTML = '<div style="text-align:center; padding:24px; color:var(--text-light); font-size:14px;">⏳ 正在翻译...</div>';
 
   let translation = '', phonetics = '', wordClass = '', definitions = '', origin = '';
+  let apiError = '';
 
   // 1. 翻译 (MyMemory 免费 API, 支持 CORS)
   try {
     const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(input) + '&langpair=en|zh-CN';
-    const res = await fetch(url);
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     translation = data.responseData && data.responseData.translatedText ? data.responseData.translatedText : '';
-  } catch(e) { /* fall through */ }
+  } catch(e) {
+    apiError = e.message || String(e);
+    // 备用: Google Translate 非官方端点
+    try {
+      const url2 = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=' + encodeURIComponent(input);
+      const res2 = await fetch(url2, { cache: 'no-store' });
+      if (res2.ok) {
+        const data2 = await res2.json();
+        if (data2 && data2[0] && Array.isArray(data2[0])) {
+          translation = data2[0].map(function(s) { return s && s[0] ? s[0] : ''; }).join('');
+        }
+      }
+    } catch(e2) { /* both failed */ }
+  }
 
   // 2. 单个单词 → 查词典 (Free Dictionary API, 支持 CORS)
   const words = input.split(/\s+/).filter(function(w) { return /[a-zA-Z]/.test(w); });
@@ -3709,7 +3724,7 @@ async function doTranslate() {
     var word = words[0].replace(/[^a-zA-Z-]/g, '').toLowerCase();
     if (word) {
       try {
-        var dres = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word));
+        var dres = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word), { cache: 'no-store' });
         if (dres.ok) {
           var ddata = await dres.json();
           var entry = ddata[0];
@@ -3737,7 +3752,7 @@ async function doTranslate() {
   }
 
   if (!translation) {
-    result.innerHTML = '<div style="color:#e53935; padding:12px; font-size:14px;">⚠️ 翻译失败，请检查网络连接后重试</div>';
+    result.innerHTML = '<div style="color:#e53935; padding:12px; font-size:14px;">⚠️ 翻译失败（' + escHtml(apiError || '网络错误') + '）<br>请检查网络连接后重试</div>';
     return;
   }
 
