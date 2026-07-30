@@ -1452,7 +1452,7 @@ function mergeSyncData(local, cloud) {
   return changed;
 }
 
-async function syncPull() {
+async function syncPull(force) {
   if (!supabaseClient && !initSyncClient()) return;
   if (!syncConfig || !syncConfig.connected) return;
   if (!accessPwd) return;
@@ -1470,7 +1470,8 @@ async function syncPull() {
     const cloudTime = new Date(data.updated_at).getTime();
     const localTime = syncConfig.lastSync || 0;
 
-    if (cloudTime > localTime) {
+    // force=true bypasses time check (used by visibilitychange/online events)
+    if (force || cloudTime > localTime) {
       const encKey = await deriveEncryptionKey(accessPwd, CLOUD_SALT);
       let cloudData;
       try {
@@ -1479,19 +1480,16 @@ async function syncPull() {
         cloudData = data.data; // legacy plaintext fallback
       }
       const changed = mergeSyncData(state, cloudData);
+      // Always update lastSync to cloud time (server-side, clock-safe)
+      syncConfig.lastSync = cloudTime;
+      syncConfig.hashedKey = hashedKey;
+      saveSyncConfig(syncConfig);
       if (changed) {
-        syncConfig.lastSync = cloudTime;
-        syncConfig.hashedKey = hashedKey;
-        saveSyncConfig(syncConfig);
         saveVaultDebounced();
         refreshAllPages();
         // Push merged data back so other devices can pull the combined set
         syncPushDebounced();
         showToast('\u{1F504} 检测到其他设备的数据更新');
-      } else {
-        // No changes but update lastSync to avoid re-checking the same cloud data
-        syncConfig.lastSync = cloudTime;
-        saveSyncConfig(syncConfig);
       }
     }
   } catch(e) { }
@@ -4275,9 +4273,21 @@ function init() {
 
   // Initialize cloud sync
   if (initSyncClient() && syncConfig && syncConfig.connected) {
-    syncPull();
-    // Periodic pull every 30 seconds
-    window.__syncInterval = setInterval(syncPull, 30000);
+    syncPull(true);
+    // Periodic pull every 15 seconds
+    window.__syncInterval = setInterval(function() { syncPull(false); }, 15000);
+    // Pull immediately when tab becomes visible (mobile returns to foreground)
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden && vaultReady && syncConfig && syncConfig.connected) {
+        syncPull(true);
+      }
+    });
+    // Pull when network comes back online
+    window.addEventListener('online', function() {
+      if (vaultReady && syncConfig && syncConfig.connected) {
+        syncPull(true);
+      }
+    });
   }
 
   // Register service worker with update detection
