@@ -618,6 +618,31 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); box-sha
 </head>
 <body>
 
+<!-- ===== App Lock (Encrypted Vault Gate) ===== -->
+<div id="appLock" class="app-lock">
+  <div class="app-lock-card">
+    <div class="app-lock-logo">白</div>
+    <div class="app-lock-title">个人成长工作台</div>
+    <div class="app-lock-sub" id="lockSub">请输入访问密码</div>
+    <input type="password" id="lockPwd" class="app-lock-input" placeholder="访问密码" autocomplete="off" onkeydown="if(event.key==='Enter')lockSubmit()">
+    <input type="password" id="lockPwd2" class="app-lock-input" placeholder="再次输入确认密码" autocomplete="off" style="display:none" onkeydown="if(event.key==='Enter')lockSubmit()">
+    <button class="app-lock-btn" id="lockBtn" onclick="lockSubmit()">解 锁</button>
+    <div class="app-lock-hint" id="lockHint"></div>
+  </div>
+</div>
+<style>
+.app-lock{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f5f7fa,#e4ecf5);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+.app-lock-card{background:#fff;border-radius:22px;padding:42px 34px 34px;width:340px;max-width:90vw;box-shadow:0 24px 60px rgba(45,52,54,.18);text-align:center;}
+.app-lock-logo{width:74px;height:74px;margin:0 auto 16px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-size:34px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(118,75,162,.35);}
+.app-lock-title{font-size:20px;font-weight:700;color:#2d3436;margin-bottom:4px;}
+.app-lock-sub{font-size:13px;color:#636e72;margin-bottom:22px;}
+.app-lock-input{width:100%;padding:14px 16px;border:2px solid #dfe6e9;border-radius:12px;font-size:16px;text-align:center;letter-spacing:3px;margin-bottom:12px;box-sizing:border-box;outline:none;transition:border .2s;}
+.app-lock-input:focus{border-color:#667eea;}
+.app-lock-btn{width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-size:16px;font-weight:600;cursor:pointer;transition:transform .1s;}
+.app-lock-btn:active{transform:scale(.98);}
+.app-lock-hint{font-size:12px;color:#e74c3c;margin-top:14px;min-height:16px;}
+</style>
+
 <div class="app-container">
   <!-- Sidebar Overlay -->
   <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
@@ -1051,21 +1076,23 @@ const LS = {
   set(k, v) { localStorage.setItem('bai_'+k, JSON.stringify(v)); }
 };
 
+// NOTE: data fields are empty shells until the vault is unlocked.
+// Plaintext is NEVER loaded at startup — prevents F11/devtools scraping while locked.
 let state = {
   planOffset: 0, // days from today
   currentPage: 'plan',
-  planTasks: LS.get('planTasks', {}),
-  bills: LS.get('bills', []),
-  savings: LS.get('savings', []),
-  savingsAccounts: LS.get('savingsAccounts', []),
+  planTasks: {},
+  bills: [],
+  savings: [],
+  savingsAccounts: [],
   financeMonth: '', // 'YYYY-MM' for date filter, empty = current month
-  fitnessTasks: LS.get('fitnessTasks', {}),
-  bodyRecords: LS.get('bodyRecords', []),
-  readingRecords: LS.get('readingRecords', []),
-  goals: LS.get('goals', []),
-  knowledge: LS.get('knowledge', []),
+  fitnessTasks: {},
+  bodyRecords: [],
+  readingRecords: [],
+  goals: [],
+  knowledge: [],
   knowledgeFilter: 'all',
-  vocabReview: LS.get('vocabReview', { currentIdx: 0, results: [], lastDate: '' })
+  vocabReview: { currentIdx: 0, results: [], lastDate: '' }
 };
 
 // Book recommendation pool
@@ -1173,16 +1200,8 @@ function formatDate(d) {
 }
 
 function save() {
-  LS.set('planTasks', state.planTasks);
-  LS.set('bills', state.bills);
-  LS.set('savings', state.savings);
-  LS.set('savingsAccounts', state.savingsAccounts);
-  LS.set('fitnessTasks', state.fitnessTasks);
-  LS.set('bodyRecords', state.bodyRecords);
-  LS.set('readingRecords', state.readingRecords);
-  LS.set('goals', state.goals);
-  LS.set('knowledge', state.knowledge);
-  LS.set('vocabReview', state.vocabReview);
+  // Data is encrypted into the vault (AES-GCM) — no plaintext in localStorage.
+  saveVaultDebounced();
   syncPushDebounced();
 }
 
@@ -1199,8 +1218,8 @@ async function hashSyncKey(pwd) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2,'0')).join('');
 }
 
-async function deriveEncryptionKey(pwd) {
-  const salt = new TextEncoder().encode('bai-sync-v1');
+async function deriveEncryptionKey(pwd, saltStr) {
+  const salt = new TextEncoder().encode(saltStr || 'bai-sync-v1');
   const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(pwd), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' }, keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
@@ -1234,7 +1253,7 @@ function saveSyncConfig(cfg) {
 
 function initSyncClient() {
   loadSyncConfig();
-  if (!syncConfig || !syncConfig.url || !syncConfig.anonKey || !syncConfig.pwd) return false;
+  if (!syncConfig || !syncConfig.url || !syncConfig.anonKey) return false;
   try {
     supabaseClient = supabase.createClient(syncConfig.url, syncConfig.anonKey);
     return true;
@@ -1303,9 +1322,15 @@ async function connectSync() {
       status.innerHTML = '<span style="color:var(--danger);">❌ 连接失败: ' + error.message + '<br><small>请确认已执行建表SQL</small></span>';
       return;
     }
-    // Connection OK, hash the password for sync_key
+    // The sync password is also the master/access password — they must match.
+    if (accessPwd && pwd !== accessPwd) {
+      status.innerHTML = '<span style="color:var(--danger);">⚠️ 同步密码必须与当前访问密码一致</span>';
+      return;
+    }
     const hashedKey = await hashSyncKey(pwd);
-    saveSyncConfig({ url, anonKey, pwd, hashedKey, connected: true, lastSync: null });
+    saveSyncConfig({ url, anonKey, hashedKey, connected: true, lastSync: null });
+    accessPwd = pwd;
+    if (!localStorage.getItem(LOCK_HASH_KEY)) localStorage.setItem(LOCK_HASH_KEY, await hashPassword(pwd));
     supabaseClient = client;
     updateSyncButtonUI();
     document.getElementById('disconnectSyncBtn').style.display = '';
@@ -1327,7 +1352,7 @@ async function connectSync() {
 }
 
 async function disconnectSync() {
-  saveSyncConfig({ url: syncConfig.url, anonKey: syncConfig.anonKey, pwd: syncConfig.pwd, hashedKey: syncConfig.hashedKey, connected: false, lastSync: null });
+  saveSyncConfig({ url: syncConfig.url, anonKey: syncConfig.anonKey, hashedKey: syncConfig.hashedKey, connected: false, lastSync: null });
   supabaseClient = null;
   updateSyncButtonUI();
   document.getElementById('disconnectSyncBtn').style.display = 'none';
@@ -1341,9 +1366,10 @@ async function syncPush() {
   try {
     const plainData = {};
     SYNC_STATE_KEYS.forEach(k => { plainData[k] = state[k]; });
-    const encKey = await deriveEncryptionKey(syncConfig.pwd);
+    if (!accessPwd) return;
+    const encKey = await deriveEncryptionKey(accessPwd, CLOUD_SALT);
     const encrypted = await encryptData(encKey, plainData);
-    const hashedKey = syncConfig.hashedKey || await hashSyncKey(syncConfig.pwd);
+    const hashedKey = syncConfig.hashedKey || await hashSyncKey(accessPwd);
     const { error } = await supabaseClient.from('bai_sync').upsert({
       sync_key: hashedKey,
       data: encrypted,
@@ -1367,8 +1393,9 @@ function syncPushDebounced() {
 async function syncPull() {
   if (!supabaseClient && !initSyncClient()) return;
   if (!syncConfig || !syncConfig.connected) return;
+  if (!accessPwd) return;
   try {
-    const hashedKey = syncConfig.hashedKey || await hashSyncKey(syncConfig.pwd);
+    const hashedKey = syncConfig.hashedKey || await hashSyncKey(accessPwd);
     const { data, error } = await supabaseClient.from('bai_sync')
       .select('data, updated_at')
       .eq('sync_key', hashedKey)
@@ -1393,7 +1420,6 @@ async function syncPull() {
       SYNC_STATE_KEYS.forEach(k => {
         if (cloudData[k] !== undefined) {
           state[k] = cloudData[k];
-          LS.set(k, cloudData[k]);
           changed = true;
         }
       });
@@ -1401,11 +1427,201 @@ async function syncPull() {
         syncConfig.lastSync = cloudTime;
         syncConfig.hashedKey = hashedKey;
         saveSyncConfig(syncConfig);
+        saveVaultDebounced();
         refreshAllPages();
         showToast('\u{1F504} 检测到其他设备的数据更新');
       }
     }
   } catch(e) { }
+}
+
+// ==================== APP LOCK / ENCRYPTED VAULT ====================
+// Master password lives ONLY in memory. localStorage holds:
+//   - NO plaintext data (all in encrypted vault blob)
+//   - NO plaintext password (only a SHA-256 hash)
+// Data at rest is AES-GCM-256. F12 / scrapers see ciphertext only.
+const VAULT_KEY = 'bai_vault';
+const LOCK_HASH_KEY = 'bai_lock_hash';
+const VAULT_SALT = 'bai-lock-v1';
+const CLOUD_SALT = 'bai-sync-v1';
+const IDLE_TIMEOUT = 5 * 60 * 1000;
+const STATE_DATA_KEYS = ['planTasks','bills','savings','savingsAccounts','fitnessTasks','bodyRecords','readingRecords','goals','knowledge','vocabReview'];
+
+let accessPwd = null;
+let vaultReady = false;
+let idleTimer = null;
+
+async function hashPassword(pwd) {
+  const data = new TextEncoder().encode(pwd);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function hasLockSet() { return !!localStorage.getItem(LOCK_HASH_KEY); }
+
+function packState() {
+  const out = {};
+  STATE_DATA_KEYS.forEach(k => { out[k] = state[k]; });
+  return out;
+}
+
+function clearStateData() {
+  STATE_DATA_KEYS.forEach(k => {
+    if (k === 'vocabReview') state[k] = { currentIdx: 0, results: [], lastDate: '' };
+    else if (Array.isArray(state[k])) state[k] = [];
+    else state[k] = {};
+  });
+}
+
+async function loadVault(pwd) {
+  const raw = localStorage.getItem(VAULT_KEY);
+  if (!raw) return false;
+  try {
+    const enc = JSON.parse(raw);
+    const key = await deriveEncryptionKey(pwd, VAULT_SALT);
+    const plain = await decryptData(key, enc);
+    STATE_DATA_KEYS.forEach(k => { if (plain[k] !== undefined) state[k] = plain[k]; });
+    return true;
+  } catch(e) { return false; }
+}
+
+let vaultSaveTimer = null;
+async function saveVault() {
+  if (!accessPwd) return;
+  try {
+    const key = await deriveEncryptionKey(accessPwd, VAULT_SALT);
+    const enc = await encryptData(key, packState());
+    localStorage.setItem(VAULT_KEY, JSON.stringify(enc));
+  } catch(e) { console.error('vault save failed', e); }
+}
+function saveVaultDebounced() {
+  if (!accessPwd) return;
+  clearTimeout(vaultSaveTimer);
+  vaultSaveTimer = setTimeout(saveVault, 800);
+}
+
+async function migrateLegacyPlaintext(pwd) {
+  let found = false;
+  const merged = {};
+  STATE_DATA_KEYS.forEach(k => {
+    const raw = localStorage.getItem('bai_' + k);
+    if (raw !== null) { try { merged[k] = JSON.parse(raw); found = true; } catch(e){} }
+  });
+  if (found) {
+    STATE_DATA_KEYS.forEach(k => { if (merged[k] !== undefined) state[k] = merged[k]; });
+    const key = await deriveEncryptionKey(pwd, VAULT_SALT);
+    const enc = await encryptData(key, packState());
+    localStorage.setItem(VAULT_KEY, JSON.stringify(enc));
+    STATE_DATA_KEYS.forEach(k => localStorage.removeItem('bai_' + k));
+  }
+  return found;
+}
+
+function sanitizeSyncConfig() {
+  if (syncConfig && syncConfig.pwd) {
+    delete syncConfig.pwd;
+    saveSyncConfig(syncConfig);
+  }
+}
+
+function showLockUI(mode) {
+  const sub = document.getElementById('lockSub');
+  const p2 = document.getElementById('lockPwd2');
+  const btn = document.getElementById('lockBtn');
+  const hint = document.getElementById('lockHint');
+  const p1 = document.getElementById('lockPwd');
+  p1.value = ''; p2.value = ''; hint.textContent = '';
+  if (mode === 'setup') {
+    sub.textContent = (syncConfig && syncConfig.pwd) ? '请输入你之前设置的同步密码以启用安全锁' : '首次使用，请设置访问密码';
+    p2.style.display = (syncConfig && syncConfig.pwd) ? 'none' : '';
+    btn.textContent = '启用安全锁';
+  } else {
+    sub.textContent = '请输入访问密码';
+    p2.style.display = 'none';
+    btn.textContent = '解 锁';
+  }
+  p1.placeholder = '访问密码';
+  document.getElementById('appLock').style.display = 'flex';
+  p1.focus();
+}
+
+function hideLockUI() { document.getElementById('appLock').style.display = 'none'; }
+
+async function lockSubmit() {
+  const p1 = document.getElementById('lockPwd').value;
+  const p2 = document.getElementById('lockPwd2').value;
+  const hint = document.getElementById('lockHint');
+  const isSetup = document.getElementById('lockPwd2').style.display !== 'none';
+
+  if (!p1) { hint.textContent = '请输入密码'; return; }
+
+  if (isSetup) {
+    if (syncConfig && syncConfig.pwd) {
+      // Reconcile with existing cloud sync password (stored plaintext in legacy versions)
+      if (p1 !== syncConfig.pwd) { hint.textContent = '与你之前设置的同步密码不一致'; return; }
+      accessPwd = p1;
+    } else {
+      if (p1.length < 4) { hint.textContent = '密码至少4位'; return; }
+      if (p1 !== p2) { hint.textContent = '两次输入不一致'; return; }
+      accessPwd = p1;
+    }
+    await migrateLegacyPlaintext(p1);
+    if (!localStorage.getItem(VAULT_KEY)) await saveVault();
+    localStorage.setItem(LOCK_HASH_KEY, await hashPassword(p1));
+    sanitizeSyncConfig();
+    vaultReady = true;
+    hideLockUI();
+    startIdleWatch();
+    init();
+    showToast('🔐 安全锁已启用，本地数据已加密');
+    return;
+  }
+
+  // unlock mode
+  const storedHash = localStorage.getItem(LOCK_HASH_KEY);
+  if (await hashPassword(p1) !== storedHash) {
+    hint.textContent = '密码错误';
+    document.getElementById('lockPwd').value = '';
+    return;
+  }
+  accessPwd = p1;
+  let ok = await loadVault(p1);
+  if (!ok) { await migrateLegacyPlaintext(p1); ok = await loadVault(p1); }
+  if (!ok && !localStorage.getItem(VAULT_KEY)) { await saveVault(); ok = true; }
+  if (!ok) {
+    hint.textContent = '无法解密数据，密码可能不正确';
+    accessPwd = null;
+    return;
+  }
+  sanitizeSyncConfig();
+  vaultReady = true;
+  hideLockUI();
+  startIdleWatch();
+  init();
+}
+
+function lockApp() {
+  accessPwd = null;
+  vaultReady = false;
+  clearStateData();
+  if (window.__syncInterval) { clearInterval(window.__syncInterval); window.__syncInterval = null; }
+  showLockUI('unlock');
+}
+
+function startIdleWatch() {
+  const reset = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(lockApp, IDLE_TIMEOUT);
+  };
+  ['mousemove','keydown','click','touchstart','scroll'].forEach(ev => {
+    document.addEventListener(ev, reset, { passive: true });
+  });
+  reset();
+}
+
+function bootApp() {
+  if (hasLockSet()) showLockUI('unlock');
+  else showLockUI('setup');
 }
 
 function refreshAllPages() {
@@ -3907,7 +4123,7 @@ function init() {
   if (initSyncClient() && syncConfig && syncConfig.connected) {
     syncPull();
     // Periodic pull every 30 seconds
-    setInterval(syncPull, 30000);
+    window.__syncInterval = setInterval(syncPull, 30000);
   }
 
   // Register service worker with update detection
@@ -3949,7 +4165,7 @@ function init() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', bootApp);
 
 // Sidebar overlay click
 document.getElementById('sidebarOverlay').addEventListener('click', closeSidebar);
