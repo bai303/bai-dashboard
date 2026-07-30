@@ -1390,6 +1390,68 @@ function syncPushDebounced() {
   syncPushTimeout = setTimeout(syncPush, 2000);
 }
 
+/**
+ * Merge cloud data into local state instead of overwriting.
+ * - Arrays: concatenate and dedup by `id` (if present) or by JSON string.
+ *   When the same id exists in both, the cloud version wins (newer).
+ * - Objects: shallow merge (cloud overrides local for same keys).
+ * - vocabReview: last-write-wins (cloud wins).
+ * Returns true if anything changed.
+ */
+function mergeSyncData(local, cloud) {
+  let changed = false;
+  SYNC_STATE_KEYS.forEach(k => {
+    const cv = cloud[k];
+    const lv = local[k];
+    if (cv === undefined || cv === null) return;
+
+    if (Array.isArray(cv) && Array.isArray(lv)) {
+      // Dedup merge: local items first, then cloud items (cloud overrides by id)
+      const byId = {};
+      const byStr = {};
+      const merged = [];
+      // Add local items
+      for (const item of lv) {
+        const key = (item && typeof item === 'object' && item.id !== undefined) ? 'id:' + item.id : 'str:' + JSON.stringify(item);
+        if (!byId[key] && !byStr[key]) {
+          byId[key] = merged.length;
+          byStr[key] = true;
+          merged.push(item);
+        }
+      }
+      // Add/override with cloud items
+      for (const item of cv) {
+        const key = (item && typeof item === 'object' && item.id !== undefined) ? 'id:' + item.id : 'str:' + JSON.stringify(item);
+        if (key in byId) {
+          merged[byId[key]] = item; // cloud version overrides
+        } else if (!byStr[key]) {
+          byId[key] = merged.length;
+          byStr[key] = true;
+          merged.push(item);
+        }
+      }
+      if (merged.length !== lv.length || JSON.stringify(merged) !== JSON.stringify(lv)) {
+        local[k] = merged;
+        changed = true;
+      }
+    } else if (typeof cv === 'object' && !Array.isArray(cv) && typeof lv === 'object' && !Array.isArray(lv) && lv) {
+      // Shallow merge objects: cloud overrides local
+      const merged = Object.assign({}, lv, cv);
+      if (JSON.stringify(merged) !== JSON.stringify(lv)) {
+        local[k] = merged;
+        changed = true;
+      }
+    } else {
+      // Primitive or type mismatch: cloud wins
+      if (JSON.stringify(cv) !== JSON.stringify(lv)) {
+        local[k] = cv;
+        changed = true;
+      }
+    }
+  });
+  return changed;
+}
+
 async function syncPull() {
   if (!supabaseClient && !initSyncClient()) return;
   if (!syncConfig || !syncConfig.connected) return;
@@ -1416,20 +1478,20 @@ async function syncPull() {
       } catch(e) {
         cloudData = data.data; // legacy plaintext fallback
       }
-      let changed = false;
-      SYNC_STATE_KEYS.forEach(k => {
-        if (cloudData[k] !== undefined) {
-          state[k] = cloudData[k];
-          changed = true;
-        }
-      });
+      const changed = mergeSyncData(state, cloudData);
       if (changed) {
         syncConfig.lastSync = cloudTime;
         syncConfig.hashedKey = hashedKey;
         saveSyncConfig(syncConfig);
         saveVaultDebounced();
         refreshAllPages();
+        // Push merged data back so other devices can pull the combined set
+        syncPushDebounced();
         showToast('\u{1F504} 检测到其他设备的数据更新');
+      } else {
+        // No changes but update lastSync to avoid re-checking the same cloud data
+        syncConfig.lastSync = cloudTime;
+        saveSyncConfig(syncConfig);
       }
     }
   } catch(e) { }
@@ -1524,6 +1586,37 @@ function sanitizeSyncConfig() {
   }
 }
 
+/**
+ * Migrate legacy sync config (pre-security-lock format):
+ *  - Old format had pwd (plaintext) and no 'connected' field
+ *  - Old sync_key was the plaintext password, new format is SHA-256 hash
+ *  - This migration ensures both devices derive the SAME sync_key from
+ *    the SAME old password, so they read/write the SAME Supabase row.
+ */
+async function migrateLegacySyncConfig() {
+  if (!syncConfig) return;
+  let changed = false;
+  // Legacy: had pwd but no 'connected' field
+  if (syncConfig.pwd !== undefined && syncConfig.connected === undefined) {
+    syncConfig.connected = true;
+    // Old hashedKey was the plaintext password (not a real hash);
+    // recompute as SHA-256 so it matches the new format.
+    if (!syncConfig.hashedKey || syncConfig.hashedKey.length < 32) {
+      syncConfig.hashedKey = await hashSyncKey(syncConfig.pwd);
+    }
+    delete syncConfig.pwd;
+    changed = true;
+  }
+  // Also fix: old hashedKey that was actually a plaintext password
+  if (syncConfig.hashedKey && syncConfig.hashedKey.length < 32) {
+    // This is a plaintext password, not a hash — but we don't have
+    // the original password anymore. Mark as needing reconnection.
+    syncConfig.connected = false;
+    changed = true;
+  }
+  if (changed) saveSyncConfig(syncConfig);
+}
+
 function showLockUI(mode) {
   const sub = document.getElementById('lockSub');
   const p2 = document.getElementById('lockPwd2');
@@ -1557,7 +1650,13 @@ async function lockSubmit() {
 
   if (isSetup) {
     if (syncConfig && syncConfig.connected) {
-      // Sync already connected — password should match the sync password
+      // Sync already connected — the entered password MUST match the
+      // original sync password so both devices derive the same sync_key.
+      const inputHash = await hashSyncKey(p1);
+      if (syncConfig.hashedKey && inputHash !== syncConfig.hashedKey) {
+        hint.textContent = '密码与原同步密码不一致！请输入你之前设置的同步密码，否则两台设备无法同步。';
+        return;
+      }
       accessPwd = p1;
     } else {
       if (p1.length < 4) { hint.textContent = '密码至少4位'; return; }
@@ -1618,7 +1717,11 @@ function startIdleWatch() {
   reset();
 }
 
-function bootApp() {
+async function bootApp() {
+  // Load sync config BEFORE showing lock UI so the setup prompt
+  // knows whether sync was already connected (legacy migration).
+  loadSyncConfig();
+  await migrateLegacySyncConfig();
   if (hasLockSet()) showLockUI('unlock');
   else showLockUI('setup');
 }
