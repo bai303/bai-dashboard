@@ -1409,7 +1409,7 @@ async function syncPull() {
     const localTime = syncConfig.lastSync || 0;
 
     if (cloudTime > localTime) {
-      const encKey = await deriveEncryptionKey(syncConfig.pwd);
+      const encKey = await deriveEncryptionKey(accessPwd, CLOUD_SALT);
       let cloudData;
       try {
         cloudData = await decryptData(encKey, data.data);
