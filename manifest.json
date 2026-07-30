@@ -1,0 +1,22 @@
+{
+  "name": "白 - 个人成长工作台",
+  "short_name": "白",
+  "description": "个人成长 Agent 工作台 - 打卡·理财·健身·读书·学习·目标·知识库·数据",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#E3F2FD",
+  "theme_color": "#64B5F6",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
